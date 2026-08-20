@@ -1,0 +1,17 @@
+{
+  "name": "tesoreria-radar",
+  "framework": "nextjs",
+  "cron": "*/5 * * * *",
+  "staleAfterSeconds": 600,
+  "dailyReport": "08:00 America/Argentina/Buenos_Aires",
+  "modules": [
+    "BCRA",
+    "FX",
+    "ARCA",
+    "CASH_CALENDAR",
+    "REAL_ESTATE",
+    "VACA_MUERTA",
+    "ECONOMY"
+  ],
+  "productionStatus": "ready-for-project-provisioning"
+}
