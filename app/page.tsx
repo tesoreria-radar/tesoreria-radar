@@ -3,6 +3,15 @@
 import { useEffect, useMemo, useState } from 'react';
 
 type Status = { ok?: boolean; checkedAt?: string; refreshEverySeconds?: number; staleAfterSeconds?: number; status?: string };
+type DashboardData = {
+  checkedAt?: string;
+  market?: {
+    oficial?: { compra: number | null; venta: number | null };
+    mep?: { compra: number | null; venta: number | null };
+    brechaMepOficial?: number | null;
+  };
+  inflation?: { month: string; value: number } | null;
+};
 
 const modules = [
   ['BCRA', 'Comunicaciones, normativa y próximos informes'],
@@ -13,15 +22,23 @@ const modules = [
   ['Vaca Muerta', 'Energía · RIGI · infraestructura'],
 ];
 
+const money = (v: number | null | undefined) => v == null ? '—' : `$${v.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`;
+const pct = (v: number | null | undefined) => v == null ? '—' : `${v.toFixed(2)}%`;
+
 export default function Dashboard() {
   const [status, setStatus] = useState<Status>({});
+  const [data, setData] = useState<DashboardData>({});
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [section, setSection] = useState('Resumen');
 
   async function refresh() {
     try {
-      const r = await fetch('/api/health', { cache: 'no-store' });
-      setStatus(await r.json());
+      const [health, dashboard] = await Promise.all([
+        fetch('/api/health', { cache: 'no-store' }),
+        fetch('/api/dashboard', { cache: 'no-store' }),
+      ]);
+      setStatus(await health.json());
+      if (dashboard.ok) setData(await dashboard.json());
       setLastRefresh(new Date());
     } catch {
       setStatus({ ok: false, status: 'degraded' });
@@ -36,6 +53,8 @@ export default function Dashboard() {
 
   const nav = ['Resumen', 'Alertas', 'Mercado', 'ARCA', 'Cash Calendar', 'BCRA', 'Real Estate', 'Vaca Muerta'];
   const systemState = useMemo(() => status.ok === false ? ['Degradado', '🟠'] : ['Operativo', '🟢'], [status.ok]);
+  const oficial = data.market?.oficial;
+  const mep = data.market?.mep;
 
   return (
     <div style={{minHeight:'100vh', background:'radial-gradient(circle at 80% -10%, #17345b 0, #0b1220 34%, #060b14 70%)', color:'#e8eef8', fontFamily:'Inter, ui-sans-serif, system-ui'}}>
@@ -57,16 +76,16 @@ export default function Dashboard() {
         <section style={{padding:34, maxWidth:1450}}>
           <div style={{background:'linear-gradient(135deg, rgba(29,70,120,.65), rgba(11,21,36,.9))', border:'1px solid rgba(100,180,255,.22)', borderRadius:18, padding:24, marginBottom:18, boxShadow:'0 20px 60px rgba(0,0,0,.25)'}}>
             <div style={{fontSize:11, letterSpacing:1.5, color:'#79baff'}}>TESO AI · EXECUTIVE BRIEF</div>
-            <div style={{display:'flex', justifyContent:'space-between', gap:20, alignItems:'end'}}><h2 style={{fontSize:25, margin:'12px 0 0'}}>Radar operativo conectado y listo para producción.</h2><span style={{fontSize:12, color:'#91a4bd'}}>RISK SCORE <b style={{fontSize:18, color:'#f5c96b'}}>62 · MEDIO</b></span></div>
-            <p style={{color:'#b6c7db', marginBottom:0}}>Monitoreo de mercado, BCRA, ARCA, caja y sectores estratégicos desde un único centro de control.</p>
+            <div style={{display:'flex', justifyContent:'space-between', gap:20, alignItems:'end'}}><h2 style={{fontSize:25, margin:'12px 0 0'}}>Radar operativo conectado a datos de mercado.</h2><span style={{fontSize:12, color:'#91a4bd'}}>RISK SCORE <b style={{fontSize:18, color:'#f5c96b'}}>62 · MEDIO</b></span></div>
+            <p style={{color:'#b6c7db', marginBottom:0}}>Cotizaciones en vivo, BCRA, ARCA, caja y sectores estratégicos desde un único centro de control.</p>
           </div>
 
           <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14}}>
             {[
-              ['Alertas críticas','0','Requieren acción inmediata'],
-              ['Próximos 7 días','04/09','REM · agenda BCRA'],
-              ['Brecha MEP / Oficial','—','Esperando cotización en vivo'],
-              ['Datos stale','0','Umbral: 10 minutos'],
+              ['Dólar oficial', money(oficial?.venta), 'Venta · DolarAPI'],
+              ['Dólar MEP', money(mep?.venta), 'Venta · DolarAPI'],
+              ['Brecha MEP / Oficial', pct(data.market?.brechaMepOficial), 'Calculada en tiempo real'],
+              ['Inflación último dato', data.inflation ? pct(data.inflation.value) : '—', data.inflation ? data.inflation.month : 'Esperando dato'],
             ].map(([a,b,c]) => <div key={a} style={{background:'rgba(13,23,38,.82)', border:'1px solid rgba(124,162,204,.17)', borderRadius:14, padding:18}}><div style={{fontSize:12, color:'#8196b0'}}>{a}</div><div style={{fontSize:27, fontWeight:800, margin:'8px 0'}}>{b}</div><div style={{fontSize:12, color:'#71869f'}}>{c}</div></div>)}
           </div>
 
