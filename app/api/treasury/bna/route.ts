@@ -4,6 +4,8 @@ export const dynamic = 'force-dynamic';
 
 const BNA_URL = 'https://www.bna.com.ar/Empresas';
 
+type Quote = { buy: number; sell: number };
+
 function number(value: string) {
   const cleaned = value.replace(/[^0-9,.-]/g, '').trim();
   const normalized = cleaned.includes(',')
@@ -13,68 +15,83 @@ function number(value: string) {
   return Number.isFinite(n) ? n : null;
 }
 
-function extractPairs(html: string) {
-  const text = html
+function cleanHtml(html: string) {
+  return html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/\s+/g, ' ');
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-  const patterns = [
-    /D[oó]lar\s+U\.?S\.?A\.?[\s\S]{0,500}?Compra[\s:$]*([0-9.,]+)[\s\S]{0,180}?Venta[\s:$]*([0-9.,]+)/i,
-    /D[oó]lar\s+U\.?S\.?A\.?[\s\S]{0,500}?([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]+)?)[\s\S]{0,120}?([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]+)?)/i,
-  ];
+function extractQuote(text: string, label: RegExp) {
+  const section = text.match(label)?.[1] ?? '';
+  const match = section.match(/Compra\s*[:$-]?\s*([0-9.,]+)[\s\S]{0,120}?Venta\s*[:$-]?\s*([0-9.,]+)/i);
+  if (!match) return null;
+  const buy = number(match[1]);
+  const sell = number(match[2]);
+  return buy != null && sell != null ? { buy, sell } : null;
+}
 
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      const buy = number(match[1]);
-      const sell = number(match[2]);
-      if (buy != null && sell != null) return { buy, sell };
-    }
-  }
+function extract(html: string) {
+  const text = cleanHtml(html);
 
-  const cells = [...text.matchAll(/(?:Compra|Compra\s*\$)\s*([0-9.,]+)[\s|]*?(?:Venta|Venta\s*\$)\s*([0-9.,]+)/gi)];
-  for (const match of cells) {
-    const buy = number(match[1]);
-    const sell = number(match[2]);
-    if (buy != null && sell != null) return { buy, sell };
-  }
+  // Keep the quote classes separate. Never use the official quote as a proxy for BNA divisa.
+  const billete = extractQuote(
+    text,
+    /D[oó]lar\s+U\.?S\.?A\.?\s+Billete([\s\S]{0,1200}?)(?=D[oó]lar\s+U\.?S\.?A\.?\s+Divisa|$)/i,
+  );
+  const divisa = extractQuote(
+    text,
+    /D[oó]lar\s+U\.?S\.?A\.?\s+Divisa([\s\S]{0,1200}?)(?=D[oó]lar\s+U\.?S\.?A\.?\s+Billete|$)/i,
+  );
 
-  return null;
+  return { billete, divisa };
 }
 
 export async function GET() {
   const checkedAt = new Date().toISOString();
+
   try {
     const res = await fetch(BNA_URL, {
       cache: 'no-store',
       headers: { 'User-Agent': 'Mozilla/5.0 Tesoreria-Radar/1.0' },
     });
     if (!res.ok) throw new Error(`BNA HTTP ${res.status}`);
+
     const html = await res.text();
+    const { billete, divisa } = extract(html);
 
-    const direct = extractPairs(html);
-
-    return NextResponse.json({
-      ok: Boolean(direct),
-      checkedAt,
-      source: BNA_URL,
-      billete: direct,
-      divisa: null,
-      sourceStatus: { billete: direct ? 'OK' : 'ERROR', divisa: 'PENDIENTE_VERIFICACION' },
-      methodology: 'Cotización BNA directa. El parser no fabrica divisa: solo informa una serie cuando la fuente directa permite identificarla de forma inequívoca.',
-    }, { headers: { 'Cache-Control': 'no-store, max-age=0' } });
+    return NextResponse.json(
+      {
+        ok: billete != null || divisa != null,
+        checkedAt,
+        source: BNA_URL,
+        billete,
+        divisa,
+        sourceStatus: {
+          billete: billete ? 'OK' : 'ERROR',
+          divisa: divisa ? 'OK' : 'ERROR',
+        },
+        methodology:
+          'Cotización BNA directa. Billete y divisa se extraen por separado; no se sustituye una serie faltante por otra fuente o por otra cotización.',
+      },
+      { headers: { 'Cache-Control': 'no-store, max-age=0' } },
+    );
   } catch (error) {
-    return NextResponse.json({
-      ok: false,
-      checkedAt,
-      source: BNA_URL,
-      billete: null,
-      divisa: null,
-      sourceStatus: { billete: 'ERROR', divisa: 'PENDIENTE_VERIFICACION' },
-      error: error instanceof Error ? error.message : 'BNA unavailable',
-    }, { status: 502 });
+    return NextResponse.json(
+      {
+        ok: false,
+        checkedAt,
+        source: BNA_URL,
+        billete: null,
+        divisa: null,
+        sourceStatus: { billete: 'ERROR', divisa: 'ERROR' },
+        error: error instanceof Error ? error.message : 'BNA unavailable',
+      },
+      { status: 502 },
+    );
   }
 }
