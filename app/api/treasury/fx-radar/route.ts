@@ -24,6 +24,10 @@ function stdev(values: number[], avg: number | null) {
   return Math.sqrt(variance);
 }
 
+function dateKey(date: Date) {
+  return date.toISOString().slice(0, 10).replaceAll('-', '/');
+}
+
 async function json(path: string) {
   const r = await fetch(`${API}/${path}`, {
     cache: 'no-store',
@@ -34,17 +38,27 @@ async function json(path: string) {
 }
 
 async function historicalMep() {
-  const r = await fetch(`${API}/bolsa`, {
-    cache: 'no-store',
-    headers: { 'User-Agent': 'Tesoreria-Radar/1.0' },
-  });
-  if (!r.ok) throw new Error(`bolsa history HTTP ${r.status}`);
-  const rows = await r.json();
-  if (!Array.isArray(rows)) return [];
-  return rows
-    .map((row) => n(row?.venta))
-    .filter((value): value is number => value != null)
-    .slice(-30);
+  // ArgentinaDatos exposes the historical quote by house/date. Build a small
+  // recent window from actual dated observations rather than assuming /bolsa
+  // is itself a historical array.
+  const days: string[] = [];
+  const cursor = new Date();
+  for (let i = 0; i < 30; i += 1) {
+    days.push(dateKey(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+
+  const rows = await Promise.all(days.map(async (day) => {
+    try {
+      const row = await json(`bolsa/${day}`);
+      const value = n(row?.venta);
+      return value != null ? value : null;
+    } catch {
+      return null;
+    }
+  }));
+
+  return rows.filter((value): value is number => value != null);
 }
 
 export async function GET() {
@@ -60,11 +74,11 @@ export async function GET() {
   const historical = history.status === 'fulfilled' ? history.value : [];
   const officialSell = n(o?.venta);
   const mepSell = n(m?.venta);
-  const mepValues = historical.length ? historical : mepSell != null ? [mepSell] : [];
+  const mepValues = historical.length >= 5 ? historical : mepSell != null ? [mepSell] : [];
   const avg = mean(mepValues);
   const deviation = mepSell != null && avg != null ? spread(mepSell, avg) : null;
   const sigma = stdev(mepValues, avg);
-  const zScore = mepSell != null && avg != null && sigma && sigma > 0 ? (mepSell - avg) / sigma : null;
+  const zScore = mepSell != null && avg != null && sigma != null && sigma > 0 ? (mepSell - avg) / sigma : null;
 
   const sourceHealth = {
     official: official.status === 'fulfilled' && officialSell != null ? 'OK' : 'ERROR',
@@ -74,16 +88,10 @@ export async function GET() {
   };
 
   const signals = [
-    mepSell != null && officialSell != null && mepSell > officialSell * 1.05
-      ? 'MEP_MUY_POR_ENCIMA_DEL_OFICIAL'
-      : null,
-    mepSell != null && officialSell != null && mepSell < officialSell
-      ? 'MEP_DEBAJO_DEL_OFICIAL'
-      : null,
+    mepSell != null && officialSell != null && mepSell > officialSell * 1.05 ? 'MEP_MUY_POR_ENCIMA_DEL_OFICIAL' : null,
+    mepSell != null && officialSell != null && mepSell < officialSell ? 'MEP_DEBAJO_DEL_OFICIAL' : null,
     zScore != null && Math.abs(zScore) >= 2
-      ? zScore > 0
-        ? 'MEP_ANOMALIA_ALTA_VS_30_OBSERVACIONES'
-        : 'MEP_ANOMALIA_BAJA_VS_30_OBSERVACIONES'
+      ? zScore > 0 ? 'MEP_ANOMALIA_ALTA_VS_30_OBSERVACIONES' : 'MEP_ANOMALIA_BAJA_VS_30_OBSERVACIONES'
       : null,
   ].filter(Boolean);
 
@@ -91,16 +99,8 @@ export async function GET() {
     {
       ok: officialSell != null || mepSell != null,
       checkedAt,
-      official: {
-        buy: n(o?.compra),
-        sell: officialSell,
-        updatedAt: o?.fechaActualizacion ?? null,
-      },
-      mep: {
-        buy: n(m?.compra),
-        sell: mepSell,
-        updatedAt: m?.fechaActualizacion ?? null,
-      },
+      official: { buy: n(o?.compra), sell: officialSell, updatedAt: o?.fechaActualizacion ?? null },
+      mep: { buy: n(m?.compra), sell: mepSell, updatedAt: m?.fechaActualizacion ?? null },
       spreads: { mepVsOfficial: spread(mepSell, officialSell) },
       anomaly: {
         window: historical.length,
@@ -113,8 +113,7 @@ export async function GET() {
       sourceHealth,
       signals,
       sources: { official: `${API}/oficial`, mep: `${API}/bolsa`, bna: BNA },
-      methodology:
-        'Brechas y anomalías calculadas exclusivamente con observaciones disponibles. La anomalía usa hasta las últimas 30 observaciones MEP y umbral |z| >= 2. BNA no se proxifica ni se mezcla con oficial/MEP.',
+      methodology: 'Brechas y anomalías calculadas exclusivamente con observaciones disponibles. La anomalía usa hasta 30 observaciones MEP obtenidas por fecha desde ArgentinaDatos y umbral |z| >= 2. BNA no se proxifica ni se mezcla con oficial/MEP.',
     },
     { headers: { 'Cache-Control': 'no-store, max-age=0' } },
   );
